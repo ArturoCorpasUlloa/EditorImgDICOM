@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Archivo: logo-dicom.svg
+  Uso: guardar como logo-dicom.svg y enlazar desde README.md o tu proyecto.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="200" viewBox="0 0 600 200" aria-label="Logo DICOM Editor">
+  <defs>
+    <linearGradient id="g1" x1="0" x2="1">
+      <stop offset="0" stop-color="#0984e3" />
+      <stop offset="1" stop-color="#00b894" />
+    </linearGradient>
+    <filter id="f1" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <!-- Fondo redondeado -->
+  <rect x="8" y="8" width="584" height="184" rx="18" ry="18" fill="white" stroke="#e6eef6" stroke-width="2"/>
+
+  <!-- Ícono: círculo con símbolo médico estilizado -->
+  <g transform="translate(40,30)" filter="url(#f1)">
+    <circle cx="80" cy="60" r="60" fill="url(#g1)" />
+
+    <!-- cruz/onda para sugerir imagen y salud -->
+    <path d="M80 30 L80 90" stroke="white" stroke-width="8" stroke-linecap="round"/>
+    <path d="M50 60 L110 60" stroke="white" stroke-width="8" stroke-linecap="round"/>
+
+    <!-- pequeño detalle tipo pixel (DICOM/digital) -->
+    <rect x="110" y="10" width="10" height="10" fill="#ffffffaa" rx="1"/>
+    <rect x="110" y="26" width="6" height="6" fill="#ffffffaa" rx="1"/>
+  </g>
+
+  <!-- Texto: DICOM EDITOR -->
+  <g transform="translate(180,65)">
+    <text x="0" y="10" font-family="Segoe UI, Arial, sans-serif" font-size="40" font-weight="700" fill="#2d3a4a">DICOM</text>
+    <text x="0" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#556070">Editor de Metadatos</text>
+  </g>
+
+  <!-- Tag line pequeño -->
+  <text x="420" y="170" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#9aa7b2">by Arturo Corpas</text>
+</svg>
+
+
+
+<!-- ASCII fallback (útil para README en texto plano) -->
+
+=================================================================
+   ____  ___  ____  __  __    ___    ___   __  __  ___  ____
+  |  _ \|_ _||  _ \|  \/  |  / _ \  / _ \ |  \/  ||_ _|/ ___|
+  | | | || | | | | | |\/| | | | | || | | || |\/| | | || |
+  | |_| || | | |_| | |  | | | |_| || |_| || |  | | | || |___
+  |____/|___||____/|_|  |_|  \___/  \___/ |_|  |_||___|\____|
+
+             Editor de Metadatos DICOM - by Arturo Corpas
+=================================================================
+
+Si quieres usar el SVG en tu README.md:
+
+```markdown
+![Logo DICOM](./logo-dicom.svg)
+```
+
+O incrustarlo inline en HTML:
+
+```html
+<img src="./logo-dicom.svg" alt="Logo DICOM" width="360" />
+```
+
+-- Fin --
