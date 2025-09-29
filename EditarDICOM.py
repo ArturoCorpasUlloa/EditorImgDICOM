@@ -1,5 +1,7 @@
 from datetime import datetime
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import pydicom
@@ -16,7 +18,7 @@ CAMPOS = {
 class DicomEditorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Editor de Imágenes DICOM")
+        self.root.title("Editor de Imágenes DICOM RRas")
         self.root.geometry("650x500")
         self.root.configure(bg="#f5f6fa")
 
@@ -24,8 +26,12 @@ class DicomEditorApp:
         self.folder_dst = tk.StringVar()
         self.entries = {}
         self.selected_patient = None
-        self.pacientes = {}  # pacientes cargados
+        self.pacientes = {}  # paciente -> ejemplo de archivo
+        self.archivos_paciente = {}  # paciente -> lista de todos los archivos (.dcm)
         self.remaining_patients = []  # pacientes pendientes por editar
+        self.processing = False  # evita operaciones concurrentes
+        self.progress_lock = threading.Lock()
+        self.current_count = 0
 
         # UI
         frame = tk.Frame(root, padx=15, pady=15, bg="#f5f6fa")
@@ -60,7 +66,9 @@ class DicomEditorApp:
         # Botones
         row += 1
         tk.Button(frame, text="Cargar Datos", bg="#0984e3", fg="white", width=15, command=self.load_dicom).grid(row=row, column=0, pady=15)
-        tk.Button(frame, text="Copiar con Cambios", bg="#00b894", fg="white", width=20, command=self.copy_with_edits).grid(row=row, column=1, pady=15)
+        # Guardamos referencia al botón para poder habilitar/deshabilitar
+        self.btn_copy = tk.Button(frame, text="Copiar con Cambios", bg="#00b894", fg="white", width=20, command=self.start_copy_thread)
+        self.btn_copy.grid(row=row, column=1, pady=15)
         tk.Button(frame, text="Salir", bg="#d63031", fg="white", width=10, command=root.quit).grid(row=row, column=2, pady=15)
 
     def select_src(self):
@@ -98,23 +106,31 @@ class DicomEditorApp:
             return user_time
 
     def load_dicom(self, reload=True):
-        """Carga la lista de pacientes, o usa la lista guardada si reload=False"""
+        """Carga la lista de pacientes y todos los archivos por paciente en memoria.
+           Si reload=False, usa lo ya cargado."""
         if not self.folder_src.get():
             messagebox.showerror("Error", "Debe seleccionar carpeta origen.")
             return
 
-        if reload:  # solo la primera vez
+        if reload:
             self.pacientes.clear()
-            for root, dirs, files in os.walk(self.folder_src.get()):
+            self.archivos_paciente.clear()
+            # Recorremos la carpeta y construimos índice en memoria
+            for root_dir, dirs, files in os.walk(self.folder_src.get()):
                 for f in files:
                     if f.lower().endswith(".dcm"):
-                        dcm_file = os.path.join(root, f)
+                        dcm_file = os.path.join(root_dir, f)
                         try:
                             ds = pydicom.dcmread(dcm_file, stop_before_pixels=True)
                             nombre = str(getattr(ds, "PatientName", "DESCONOCIDO")).upper()
+                            # guardamos un archivo ejemplo por paciente
                             if nombre not in self.pacientes:
                                 self.pacientes[nombre] = dcm_file
-                        except:
+                                self.archivos_paciente[nombre] = [dcm_file]
+                            else:
+                                self.archivos_paciente[nombre].append(dcm_file)
+                        except Exception:
+                            # ignoramos archivos dañados o no DICOM válidos
                             continue
             self.remaining_patients = list(self.pacientes.keys())
 
@@ -157,15 +173,51 @@ class DicomEditorApp:
 
         tk.Button(top, text="Cargar", command=seleccionar).pack(pady=10)
 
+    def start_copy_thread(self):
+        """Lanza la copia en un hilo separado (no bloquear UI)"""
+        if self.processing:
+            messagebox.showwarning("Procesando", "Ya hay una operación en curso.")
+            return
+        t = threading.Thread(target=self.copy_with_edits)
+        t.daemon = True
+        t.start()
+
+    def _increment_progress(self):
+        # Se ejecuta en hilo principal vía root.after
+        with self.progress_lock:
+            self.current_count += 1
+            self.progress["value"] = self.current_count
+
+    def _finish_processing(self, processed_count):
+        # Ejecutado en hilo principal al terminar
+        self.processing = False
+        self.btn_copy.config(state=tk.NORMAL)
+        # marcar paciente como procesado
+        if self.selected_patient in self.remaining_patients:
+            self.remaining_patients.remove(self.selected_patient)
+        # preguntar si se quiere otro paciente
+        if self.remaining_patients:
+            again = messagebox.askyesno("Otro paciente", "¿Desea editar otro paciente?")
+            if again:
+                self.load_dicom(reload=False)
+        messagebox.showinfo("Finalizado", f"Se copiaron y editaron {processed_count} archivos de {self.selected_patient}.")
+
     def copy_with_edits(self):
+        """Copia y edita los archivos usando un pool de threads."""
+        # Validaciones UI (estas mostrarlas en hilo principal)
         if not self.folder_src.get() or not self.folder_dst.get():
-            messagebox.showerror("Error", "Debe seleccionar carpetas de origen y destino.")
+            self.root.after(0, lambda: messagebox.showerror("Error", "Debe seleccionar carpetas de origen y destino."))
             return
 
         if not self.selected_patient:
-            messagebox.showerror("Error", "Debe cargar primero un paciente.")
+            self.root.after(0, lambda: messagebox.showerror("Error", "Debe cargar primero un paciente."))
             return
 
+        # Evitar reentradas
+        self.processing = True
+        self.root.after(0, lambda: self.btn_copy.config(state=tk.DISABLED))
+
+        # Preparar ediciones
         edits = {}
         for tag, var in self.entries.items():
             value = var.get()
@@ -177,52 +229,79 @@ class DicomEditorApp:
                 value = value.upper()
             edits[tag] = value
 
-        files_to_copy = []
-        for root, dirs, files in os.walk(self.folder_src.get()):
-            for f in files:
-                if f.lower().endswith(".dcm"):
-                    file_path = os.path.join(root, f)
-                    try:
-                        ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-                        nombre = str(getattr(ds, "PatientName", "")).upper()
-                        if nombre == self.selected_patient:
-                            files_to_copy.append(file_path)
-                    except:
-                        continue
+        # Obtener lista de archivos para el paciente (usamos el índice en memoria)
+        files_to_copy = self.archivos_paciente.get(self.selected_patient, [])
+
+        # Si por alguna razón no está el índice, fallback a recorrer el disco (pero esto ya queda raro)
+        if not files_to_copy:
+            for root, dirs, files in os.walk(self.folder_src.get()):
+                for f in files:
+                    if f.lower().endswith(".dcm"):
+                        file_path = os.path.join(root, f)
+                        try:
+                            ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+                            nombre = str(getattr(ds, "PatientName", "")).upper()
+                            if nombre == self.selected_patient:
+                                files_to_copy.append(file_path)
+                        except Exception:
+                            continue
 
         if not files_to_copy:
-            messagebox.showerror("Error", "No se encontraron archivos del paciente seleccionado.")
+            self.root.after(0, lambda: messagebox.showerror("Error", "No se encontraron archivos del paciente seleccionado."))
+            self.processing = False
+            self.root.after(0, lambda: self.btn_copy.config(state=tk.NORMAL))
             return
 
-        self.progress["maximum"] = len(files_to_copy)
-        count = 0
+        # Configurar progreso
+        total = len(files_to_copy)
+        self.current_count = 0
+        self.root.after(0, lambda: self.progress.config(value=0, maximum=total))
 
-        for src_file in files_to_copy:
-            rel_path = os.path.relpath(src_file, self.folder_src.get())
-            dst_file = os.path.join(self.folder_dst.get(), rel_path)
-            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+        # Worker que procesa un archivo
+        def process_file(src_file):
+            try:
+                rel_path = os.path.relpath(src_file, self.folder_src.get())
+                dst_file = os.path.join(self.folder_dst.get(), rel_path)
+                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
 
-            ds = pydicom.dcmread(src_file)
-            for tag, value in edits.items():
-                if hasattr(ds, tag):
-                    setattr(ds, tag, value)
-            ds.save_as(dst_file)
+                ds = pydicom.dcmread(src_file)  # leemos completo para poder guardar
+                for tag, value in edits.items():
+                    # Solo asignar si el dataset tiene ese atributo
+                    if hasattr(ds, tag):
+                        try:
+                            setattr(ds, tag, value)
+                        except Exception:
+                            # Si falla la asignación, ignorar ese campo
+                            pass
+                ds.save_as(dst_file)
+                # actualizar progreso en hilo principal
+                self.root.after(0, self._increment_progress)
+                return True
+            except Exception:
+                # en caso de error, también actualizar progreso para evitar bloquear la barra
+                self.root.after(0, self._increment_progress)
+                return False
 
-            count += 1
-            self.progress["value"] = count
-            self.root.update_idletasks()
+        # Elegir número de workers (I/O bound -> más threads)
+        cpu = os.cpu_count() or 1
+        max_workers = min(32, max(4, cpu * 5))
 
-        # marcar paciente como procesado
-        if self.selected_patient in self.remaining_patients:
-            self.remaining_patients.remove(self.selected_patient)
+        processed_count = 0
+        # Ejecutar pool de threads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_file, f): f for f in files_to_copy}
+            for fut in as_completed(futures):
+                try:
+                    ok = fut.result()
+                    if ok:
+                        processed_count += 1
+                except Exception:
+                    # no queremos que una excepción detenga todo el pool
+                    continue
 
-        # preguntar si se quiere otro paciente
-        if self.remaining_patients:
-            again = messagebox.askyesno("Otro paciente", "¿Desea editar otro paciente?")
-            if again:
-                self.load_dicom(reload=False)
+        # finalizamos en hilo principal
+        self.root.after(0, lambda: self._finish_processing(processed_count))
 
-        messagebox.showinfo("Finalizado", f"Se copiaron y editaron {count} archivos de {self.selected_patient}.")
 
 if __name__ == "__main__":
     root = tk.Tk()
